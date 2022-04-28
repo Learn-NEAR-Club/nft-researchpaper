@@ -4,7 +4,8 @@ use crate::*;
 #[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize)]
 #[serde(crate = "near_sdk::serde")]
 pub struct PaperMetadata {
-    pub title: Option<String>,
+    pub title: String,
+    pub author: Vec<String>,
     pub reviewers: HashMap<AccountId,Reviewdata>,
     pub vote_yes: u64,
     pub vote_rev: u64,

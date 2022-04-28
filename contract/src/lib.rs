@@ -53,10 +53,36 @@ pub enum StorageKey {
 impl Contract {
 
     #[init]
-    pub fn new(owner_id: AccountId, metadata: NFTContractMetadata) -> Self {
+    pub fn new(metadata: NFTContractMetadata) -> Self {
         assert!(!env::state_exists(), "Already initialized");
         let papers = Self{
-            owner: owner_id,
+            owner: env::predecessor_account_id(),
+            paperid:        LookupMap::new(StorageKey::TokensById.try_to_vec().unwrap()),
+            tokenmetadata:  UnorderedMap::new(StorageKey::TokenMetadataById.try_to_vec().unwrap()),
+            papersmetadata: UnorderedMap::new(StorageKey::PaperMetadataById.try_to_vec().unwrap()),
+            metadata:       LazyOption::new(
+                                StorageKey::NFTContractMetadata.try_to_vec().unwrap(),
+                                Some(&metadata)),
+        };
+        papers
+    }
+
+    #[init]
+    pub fn new_standard() -> Self {
+        assert!(!env::state_exists(), "Already initialized");
+
+        let metadata = NFTContractMetadata {
+            spec: NFT_METADATA_SPEC.to_string(),
+            name: "Bitcoin: A Peer-to-Peer Electronic Cash System".to_string(),
+            symbol: "EXAMPLE".to_string(),
+            icon: Some("https://bitcoin.org/bitcoin.pdf".to_string()),
+            base_uri: None,
+            reference: None,
+            reference_hash: None,
+        };
+
+        let papers = Self{
+            owner: env::predecessor_account_id(),
             paperid:        LookupMap::new(StorageKey::TokensById.try_to_vec().unwrap()),
             tokenmetadata:  UnorderedMap::new(StorageKey::TokenMetadataById.try_to_vec().unwrap()),
             papersmetadata: UnorderedMap::new(StorageKey::PaperMetadataById.try_to_vec().unwrap()),
@@ -68,8 +94,10 @@ impl Contract {
     }
 
     #[payable]
-    pub fn submit(&mut self,accrev: Vec<AccountId>){
-        assert!(env::attached_deposit()==ONE_NEAR*10);
+    pub fn submit(&mut self, token_id: &TokenId,
+        title: String, author: Vec<String>, accrev: Vec<AccountId>){
+        assert!(env::attached_deposit()==ONE_NEAR*10,"Should deposit 10 Near.");
+        assert!(accrev.len()==3,"It should be 3 reviewers!");
         Promise::new(env::current_account_id()).transfer(env::attached_deposit());
         
         let mut rev = HashMap::new();
@@ -79,41 +107,27 @@ impl Contract {
             rev.insert(account_id.clone(),revdata);
         }        
 
-        let _tkenmtdt = TokenMetadata {
-            title:          None,
-            description:    None,
-            media:          None,
-            media_hash:     None,
-            copies:         None,
-            issued_at:      None,
-            expires_at:     None,
-            starts_at:      None,
-            updated_at:     None,
-            extra:          None,
-            reference:      None,
-            reference_hash: None,
-        };
-
         let ppermtdt = PaperMetadata {
-            title:          None,
+            title:          title,
+            author:         author,
             reviewers:      rev,
             vote_yes:       0,
             vote_rev:       0,
             vote_no:        0,
             status:         Status::Unpublished,
         };
-        self.papersmetadata.insert(&"0".to_string(),&ppermtdt);
+        self.papersmetadata.insert(&token_id,&ppermtdt);
     }
 
-    pub fn stataccept(&mut self,approv: Approval){
+    pub fn stataccept(&mut self,token_id: &TokenId,approv: Approval){
         let account_id = env::predecessor_account_id();
-        assert!(self.papersmetadata.get(&"0".to_string()).unwrap().reviewers.contains_key(&account_id));
+        assert!(self.papersmetadata.get(&token_id).unwrap().reviewers.contains_key(&account_id));
         assert!(approv != Approval::AwaitApprov);
 
 
 //        let reviewer = Reviewdata{accept: Approval::Approved, vote: Vote::NotVoted, payedrev: Pay::NotPayed};
 
-        let mut a = self.papersmetadata.get(&"0".to_string()).unwrap();
+        let mut a = self.papersmetadata.get(&token_id).unwrap();
 
 
         if approv==Approval::Approved{
@@ -121,24 +135,27 @@ impl Contract {
         }else{
             a.reviewers.remove(&account_id);
         }
-        self.papersmetadata.insert(&"0".to_string(),&a);
+        self.papersmetadata.insert(&token_id,&a);
     }
 
-    pub fn addreviewer(&mut self,accrev: AccountId){
+    pub fn addreviewer(&mut self,token_id: &TokenId, accrev: AccountId){
         assert!(env::signer_account_id() != accrev.clone(),"Signer Cannot be Reviewer");
-        assert!(self.papersmetadata.get(&"0".to_string()).unwrap().reviewers.len()<3,"Already Maximum Number of Reviewers");
+        assert!(self.papersmetadata.get(&token_id).unwrap().reviewers.len()<3,"Already Maximum Number of Reviewers");
 
         let reviewer = Reviewdata{accept: Approval::Approved, vote: Vote::NotVoted, payedrev: Pay::NotPayed};
-        self.papersmetadata.get(&"0".to_string()).unwrap().reviewers.insert(accrev.clone(),reviewer);
+        self.papersmetadata.get(&token_id).unwrap().reviewers.insert(accrev.clone(),reviewer);
     }
 
-    pub fn voting(&mut self,vote: Vote) {
-        assert!(self.papersmetadata.get(&"0".to_string()).unwrap().reviewers.contains_key(&env::predecessor_account_id()));
-        let papmeta = self.papersmetadata.get(&"0".to_string()).unwrap();
+    pub fn voting(&mut self,token_id: &TokenId,vote: Vote) {
+        assert!(
+            self.papersmetadata.get(&token_id).unwrap().reviewers.contains_key(&env::predecessor_account_id()),
+            "Not a reviewer!"
+        );
+        let papmeta = self.papersmetadata.get(&token_id).unwrap();
         let review = papmeta.reviewers.get(&env::predecessor_account_id()).unwrap();
         assert!(review.vote == Vote::NotVoted,"Already Reviewed!");
 
-        let mut a = self.papersmetadata.get(&"0".to_string()).unwrap();
+        let mut a = self.papersmetadata.get(&token_id).unwrap();
 
         match vote{
             Vote::Yes =>    a.vote_yes += 1,
@@ -148,16 +165,16 @@ impl Contract {
         }
 
         a.reviewers.get_mut(&env::predecessor_account_id()).unwrap().vote = vote;
-        self.papersmetadata.insert(&"0".to_string(),&a);
+        self.papersmetadata.insert(&token_id,&a);
     }
 
     #[payable]
-    pub fn payreviewer(&mut self) {
+    pub fn payreviewer(&mut self,token_id: &TokenId) {
         assert_eq!(&env::predecessor_account_id(),&env::current_account_id(),"Not Owner!");
 
 
-        let mut a = self.papersmetadata.get(&"0".to_string()).unwrap();
-        for (account_id,revdata) in self.papersmetadata.get(&"0".to_string()).unwrap().reviewers.iter_mut() {
+        let mut a = self.papersmetadata.get(&token_id).unwrap();
+        for (account_id,revdata) in self.papersmetadata.get(&token_id).unwrap().reviewers.iter_mut() {
 
             match revdata.vote{
                 Vote::NotVoted => continue,
@@ -175,7 +192,7 @@ impl Contract {
 //            a.reviewers.get_mut(&account_id.to_string()).unwrap().payedrev = Pay::Payed;
             a.reviewers.get_mut(&account_id).unwrap().payedrev = Pay::Payed;
         }
-        self.papersmetadata.insert(&"0".to_string(),&a);
+        self.papersmetadata.insert(&token_id,&a);
     }
 
     pub fn publish(
@@ -205,7 +222,7 @@ impl Contract {
     }
 
 
-    pub(crate) fn refund_deposit(storage_used: u64) {
+    fn refund_deposit(storage_used: u64) {
         let required_cost = env::storage_byte_cost() * Balance::from(storage_used); //get how much it would cost to store 
                                                                                     //the information
         let attached_deposit = env::attached_deposit(); //get the attached deposit
@@ -287,17 +304,17 @@ mod tests {
     }
 
 
-//    fn tokenmeta() -> NFTContractMetadata {
-//        NFTContractMetadata {
-//            spec: NFT_METADATA_SPEC.to_string(),
-//            name: "Bitcoin: A Peer-to-Peer Electronic Cash System".to_string(),
-//            symbol: "EXAMPLE".to_string(),
-//            icon: Some("https://bitcoin.org/bitcoin.pdf".to_string()),
-//            base_uri: None,
-//            reference: None,
-//            reference_hash: None,
-//        }
-//    }
+    fn tokenmeta() -> NFTContractMetadata {
+        NFTContractMetadata {
+            spec: NFT_METADATA_SPEC.to_string(),
+            name: "Bitcoin: A Peer-to-Peer Electronic Cash System".to_string(),
+            symbol: "EXAMPLE".to_string(),
+            icon: Some("https://bitcoin.org/bitcoin.pdf".to_string()),
+            base_uri: None,
+            reference: None,
+            reference_hash: None,
+        }
+    }
 
 
     fn sample_token_metadata() -> TokenMetadata {
@@ -320,60 +337,128 @@ mod tests {
     #[test]
     fn test_basics() {
         let mut context = get_context(accounts(1));
-//        let token_id = "0".to_string();        
         testing_env!(context.build());
         
-        let mtdt = NFTContractMetadata{
-            spec:   "1".to_string(),
-            name:   "2".to_string(),
-            symbol: "3".to_string(),
-            icon: None,
-            base_uri: None,
-            reference: None,
-            reference_hash: None,
-        };
+        let mtdt = tokenmeta();
 
-        let mut cnt = Contract::new(accounts(1),mtdt);
+        let title = "Bitcoin: A Peer-to-Peer Electronic Cash System";
+        let author = vec!["Nakamoto, Satoshi".to_string()];
+        let token_id = "0";
+        let mut cnt = Contract::new(mtdt);
 
         testing_env!(context.storage_usage(env::storage_usage())
                             .attached_deposit(ONE_NEAR*10)
                             .predecessor_account_id(accounts(1))
                             .build());
 
-//        cnt.submit(vec![accounts(2).as_ref().into(),accounts(3).as_ref().into(),
-//                        accounts(4).as_ref().into()]);
-        cnt.submit(vec![accounts(2),accounts(3),accounts(4)]);
-                        
+        cnt.submit(&token_id.to_string(),title.to_string(),author,
+            vec![accounts(2),accounts(3),accounts(4)]
+        );
+
 
         testing_env!(VMContextBuilder::new().predecessor_account_id(accounts(2)).build());
-        cnt.stataccept(Approval::Approved);
-        cnt.voting(Vote::Yes);
+        cnt.stataccept(&token_id.to_string(),Approval::Approved);
+        cnt.voting(&token_id.to_string(),Vote::Yes);
 
         testing_env!(VMContextBuilder::new().predecessor_account_id(accounts(3)).build());
-        cnt.stataccept(Approval::Approved);
-        cnt.voting(Vote::Yes);
+        cnt.stataccept(&token_id.to_string(),Approval::Approved);
+        cnt.voting(&token_id.to_string(),Vote::Yes);
 
         testing_env!(VMContextBuilder::new().predecessor_account_id(accounts(4)).build());
-        cnt.stataccept(Approval::Approved);
-        cnt.voting(Vote::Yes);
+        cnt.stataccept(&token_id.to_string(),Approval::Approved);
+        cnt.voting(&token_id.to_string(),Vote::Yes);
 
         testing_env!(context.storage_usage(env::storage_usage())
                             .attached_deposit(ONE_NEAR)
                             .predecessor_account_id(accounts(0))
                             .build());
-        cnt.payreviewer();
+        cnt.payreviewer(&token_id.to_string());
 
         testing_env!(context.storage_usage(env::storage_usage())
                             .attached_deposit(ONE_NEAR)
                             .predecessor_account_id(accounts(0))
                             .build());
-        cnt.publish("0".to_string(), accounts(1), sample_token_metadata());
+        cnt.publish(token_id.to_string(), accounts(1), sample_token_metadata());
 
         let a = cnt.papersmetadata.get(&"0".to_string()).unwrap();
         
         assert!(a.status==Status::Published);
-//        println!("{:?}",a.status);
+    }
 
+    #[test]
+    #[should_panic]
+    fn not_approved() {
+        let mut context = get_context(accounts(1));
+        testing_env!(context.build());
+        
+        let mtdt = tokenmeta();
+
+        let title = "Bitcoin: A Peer-to-Peer Electronic Cash System";
+        let author = vec!["Nakamoto, Satoshi".to_string()];
+        let token_id = "0";
+        let mut cnt = Contract::new(mtdt);
+
+        testing_env!(context.storage_usage(env::storage_usage())
+                            .attached_deposit(ONE_NEAR*10)
+                            .predecessor_account_id(accounts(1))
+                            .build());
+
+        cnt.submit(&token_id.to_string(),title.to_string(),author,
+            vec![accounts(2),accounts(3),accounts(4)]
+        );
+                        
+
+        testing_env!(VMContextBuilder::new().predecessor_account_id(accounts(2)).build());
+        cnt.stataccept(&token_id.to_string(),Approval::Approved);
+        cnt.voting(&token_id.to_string(),Vote::No);
+
+        testing_env!(VMContextBuilder::new().predecessor_account_id(accounts(3)).build());
+        cnt.stataccept(&token_id.to_string(),Approval::Approved);
+        cnt.voting(&token_id.to_string(),Vote::Yes);
+
+        testing_env!(VMContextBuilder::new().predecessor_account_id(accounts(4)).build());
+        cnt.stataccept(&token_id.to_string(),Approval::Approved);
+        cnt.voting(&token_id.to_string(),Vote::Yes);
+
+        testing_env!(context.storage_usage(env::storage_usage())
+                            .attached_deposit(ONE_NEAR)
+                            .predecessor_account_id(accounts(0))
+                            .build());
+        cnt.payreviewer(&token_id.to_string());
+
+        testing_env!(context.storage_usage(env::storage_usage())
+                            .attached_deposit(ONE_NEAR)
+                            .predecessor_account_id(accounts(0))
+                            .build());
+        cnt.publish(token_id.to_string(), accounts(1), sample_token_metadata());
+    }
+
+    #[test]
+    #[should_panic]
+    fn vote_not_approved() {
+        let mut context = get_context(accounts(1));
+        testing_env!(context.build());
+        
+        let mtdt = tokenmeta();
+
+        let title = "Bitcoin: A Peer-to-Peer Electronic Cash System";
+        let author = vec!["Nakamoto, Satoshi".to_string()];
+        let token_id = "0";
+        let mut cnt = Contract::new(mtdt);
+
+        testing_env!(context.storage_usage(env::storage_usage())
+                            .attached_deposit(ONE_NEAR*10)
+                            .predecessor_account_id(accounts(1))
+                            .build());
+
+        cnt.submit(&token_id.to_string(),title.to_string(),author,
+            vec![accounts(2),accounts(3),accounts(4)]
+        );
+                        
+
+        testing_env!(VMContextBuilder::new().predecessor_account_id(accounts(2)).build());
+        cnt.stataccept(&token_id.to_string(),Approval::NotApproved);
+        cnt.voting(&token_id.to_string(),Vote::Yes);
     }
 
     #[test]
