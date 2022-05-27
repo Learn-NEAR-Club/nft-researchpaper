@@ -17,7 +17,10 @@ use near_sdk::json_types::{Base64VecU8,
 //use near_sdk::json_types::ValidAccountId;
 
 pub use crate::traits::*;
-mod traits; 
+mod traits;
+
+pub use crate::view_fns::*;
+mod view_fns;
 
 const ONE_NEAR: u128 = 1_000_000_000_000_000_000_000_000;
 
@@ -63,6 +66,9 @@ impl Contract {
             metadata:       LazyOption::new(
                                 StorageKey::NFTContractMetadata.try_to_vec().unwrap(),
                                 Some(&metadata)),
+//            metadata:       LazyOption::new(
+//                                StorageKey::NFTContractMetadata.try_to_vec().unwrap()
+//                            ),
         };
         papers
     }
@@ -123,9 +129,6 @@ impl Contract {
         let account_id = env::predecessor_account_id();
         assert!(self.papersmetadata.get(&token_id).unwrap().reviewers.contains_key(&account_id));
         assert!(approv != Approval::AwaitApprov);
-
-
-//        let reviewer = Reviewdata{accept: Approval::Approved, vote: Vote::NotVoted, payedrev: Pay::NotPayed};
 
         let mut a = self.papersmetadata.get(&token_id).unwrap();
 
@@ -195,6 +198,7 @@ impl Contract {
         self.papersmetadata.insert(&token_id,&a);
     }
 
+    #[payable]
     pub fn publish(
         &mut self,
         token_id: TokenId,
@@ -383,6 +387,13 @@ mod tests {
         let a = cnt.papersmetadata.get(&"0".to_string()).unwrap();
         
         assert!(a.status==Status::Published);
+        
+        testing_env!(context.storage_usage(env::storage_usage())
+                            .predecessor_account_id(accounts(1))
+                            .build());
+        let pid = cnt.view_papers();
+        println!("{:?}",pid)
+        
     }
 
     #[test]
